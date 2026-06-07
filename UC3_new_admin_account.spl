@@ -1,0 +1,52 @@
+# Detection Use Case 3 - Unauthorized Local Administrator Account Creation
+# MITRE ATT&CK: T1136 - Create Account | T1098 - Account Manipulation
+# Event Source: Windows Security Log - EventID 4720 + 4732
+# Severity: CRITICAL
+# Author: Harish Goud
+
+# -----------------------------------------------------------
+# BASIC DETECTION - Find both account creation and group add events
+# -----------------------------------------------------------
+index=* (EventCode=4720 OR EventCode=4732)
+
+# -----------------------------------------------------------
+# INTERMEDIATE - Correlate creation + group add for same account
+# -----------------------------------------------------------
+index=windows_logs (EventCode=4720 OR EventCode=4732)
+| eval event_type=case(EventCode=4720,"account_created", EventCode=4732,"added_to_group")
+| stats 
+    values(event_type) AS events_seen,
+    values(EventCode) AS event_codes,
+    min(_time) AS first_event,
+    max(_time) AS last_event
+    BY Account_Name
+| where mvcount(events_seen) >= 2
+| eval time_diff_seconds = last_event - first_event
+| where time_diff_seconds <= 300
+| eval severity="CRITICAL"
+| eval mitre="T1136.001 - Create Local Account | T1098 - Account Manipulation"
+| table Account_Name, events_seen, time_diff_seconds, first_event, severity, mitre
+
+# -----------------------------------------------------------
+# ADVANCED - Full context with creating user and computer name
+# -----------------------------------------------------------
+index=windows_logs (EventCode=4720 OR EventCode=4732)
+| eval event_type=case(EventCode=4720,"account_created", EventCode=4732,"added_to_group")
+| eval created_by=if(EventCode=4720, Subject_Account_Name, null())
+| eval group_modified=if(EventCode=4732, Group_Name, null())
+| stats 
+    values(event_type) AS events_seen,
+    values(created_by) AS creating_user,
+    values(group_modified) AS groups_modified,
+    values(ComputerName) AS host,
+    min(_time) AS first_seen,
+    max(_time) AS last_seen
+    BY Account_Name
+| where mvcount(events_seen) >= 2
+| eval time_window_seconds = last_seen - first_seen
+| where time_window_seconds <= 300
+| eval risk_score=100
+| eval alert="CRITICAL - New account added to admin group within 5 minutes of creation"
+| eval mitre="T1136 + T1098"
+| table Account_Name, creating_user, groups_modified, host, time_window_seconds, risk_score, alert
+| sort -risk_score

@@ -1,0 +1,41 @@
+# Detection Use Case 2 - Account Lockout Spike
+# MITRE ATT&CK: T1110.003 - Password Spraying
+# Event Source: Windows Security Log - EventID 4740
+# Severity: HIGH
+# Author: Harish Goud
+
+# -----------------------------------------------------------
+# BASIC DETECTION - Lockouts per target account
+# -----------------------------------------------------------
+index=* EventCode=4740
+| stats count by Target_Account
+| sort - count
+
+# -----------------------------------------------------------
+# INTERMEDIATE - Time-windowed lockout spike
+# -----------------------------------------------------------
+index=windows_logs EventCode=4740
+| bucket _time span=1m
+| stats count AS lockouts, values(Target_Account) AS locked_accounts
+    BY _time, Caller_Computer_Name
+| where lockouts >= 3
+| eval severity="HIGH"
+| eval alert="Account lockout spike detected - possible password spray"
+| eval mitre_technique="T1110.003 - Password Spraying"
+| table _time, Caller_Computer_Name, lockouts, locked_accounts, alert, severity
+
+# -----------------------------------------------------------
+# ADVANCED - Correlate lockouts with prior failed logins
+# -----------------------------------------------------------
+index=windows_logs (EventCode=4625 OR EventCode=4740)
+| eval event_type=case(EventCode=4625,"failed_login", EventCode=4740,"lockout")
+| bucket _time span=10m
+| stats 
+    count(eval(event_type="failed_login")) AS failures,
+    count(eval(event_type="lockout")) AS lockouts,
+    dc(Account_Name) AS accounts_targeted
+    BY _time, Source_Network_Address
+| where lockouts >= 2 AND failures >= 10
+| eval confirmation="CONFIRMED SPRAY - Failures led to lockouts across multiple accounts"
+| eval severity="CRITICAL"
+| table _time, Source_Network_Address, failures, lockouts, accounts_targeted, confirmation

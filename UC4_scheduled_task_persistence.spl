@@ -1,0 +1,52 @@
+# Detection Use Case 4 - Scheduled Task Persistence
+# MITRE ATT&CK: T1053.005 - Scheduled Task/Job
+# Event Source: EventID 4698 (Security Log) + Sysmon EID 1 (Process Creation)
+# Severity: HIGH
+# Author: Harish Goud
+
+# -----------------------------------------------------------
+# BASIC DETECTION - Any schtasks activity
+# -----------------------------------------------------------
+index=* schtasks
+
+# -----------------------------------------------------------
+# BASIC - Windows Security Log EventID 4698
+# -----------------------------------------------------------
+index=* EventCode=4698
+
+# -----------------------------------------------------------
+# INTERMEDIATE - Sysmon EID 1 catching schtasks.exe execution
+# -----------------------------------------------------------
+index=windows_logs source="XmlWinEventLog:Microsoft-Windows-Sysmon/Operational" EventID=1
+| where match(Image, "(?i)schtasks\.exe") AND match(CommandLine, "(?i)/create")
+| eval severity="HIGH"
+| eval mitre="T1053.005 - Scheduled Task"
+| table _time, Computer, User, CommandLine, severity, mitre
+
+# -----------------------------------------------------------
+# ADVANCED - Risk scoring based on suspicious indicators
+# -----------------------------------------------------------
+index=windows_logs source="XmlWinEventLog:Microsoft-Windows-Sysmon/Operational" EventID=1
+| where match(Image, "(?i)schtasks\.exe") AND match(CommandLine, "(?i)/create")
+| eval risk_score=0
+| eval risk_score=risk_score + if(match(CommandLine,"(?i)(cmd\.exe|powershell|wscript|mshta|regsvr32)"),40,0)
+| eval risk_score=risk_score + if(match(CommandLine,"(?i)(onstart|onlogon)"),20,0)
+| eval risk_score=risk_score + if(match(CommandLine,"(?i)(/ru\s+SYSTEM|/ru\s+\"SYSTEM\")"),25,0)
+| eval risk_score=risk_score + if(match(CommandLine,"(?i)(temp|appdata|public|programdata)"),20,0)
+| eval risk_score=risk_score + if(match(CommandLine,"(?i)(update|helper|service|svc|windows)"),10,0)
+| eval severity=case(risk_score>=60,"CRITICAL", risk_score>=40,"HIGH", risk_score>=20,"MEDIUM", true(),"LOW")
+| eval mitre="T1053.005 - Scheduled Task/Job"
+| where risk_score > 0
+| table _time, Computer, User, CommandLine, risk_score, severity, mitre
+| sort -risk_score
+
+# -----------------------------------------------------------
+# ADVANCED - Correlate EventID 4698 with Sysmon for full picture
+# -----------------------------------------------------------
+index=windows_logs (EventCode=4698 OR (source="XmlWinEventLog:Microsoft-Windows-Sysmon/Operational" EventID=1 Image="*schtasks*"))
+| eval source_type=case(EventCode=4698,"Security_Log_4698", EventID=1,"Sysmon_EID1")
+| eval task_name=coalesce(TaskName, "unknown")
+| stats values(source_type) AS detection_sources, values(task_name) AS task_names
+    BY _time, ComputerName, User
+| eval confirmed_by_multiple=if(mvcount(detection_sources)>=2,"YES","SINGLE_SOURCE")
+| table _time, ComputerName, User, task_names, detection_sources, confirmed_by_multiple
